@@ -1,0 +1,1 @@
+{"routes":[{"path":"/","title":"ECHO Dashboard"},{"path":"/memories","title":"All Memories"},{"path":"/graph","title":"Knowledge Graph"},{"path":"/recall","title":"AI Recall"},{"path":"/timeline","title":"Timeline"},{"path":"/collections","title":"Collections"},{"path":"/settings","title":"Settings"}]}
