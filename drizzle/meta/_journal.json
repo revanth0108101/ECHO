@@ -15,6 +15,13 @@
       "when": 1795520752099,
       "tag": "0001_new_grey_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1795524114456,
+      "tag": "0002_persistent_conversations",
+      "breakpoints": true
     }
   ]
 }

@@ -6,12 +6,17 @@ import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import {
+  appendConversationTurn,
   createCollection,
+  createConversation,
   createMemory,
   deleteCollection,
   deleteMemory,
+  getConversation,
+  getConversationMessages,
   getCollections,
   getMemories,
+  listConversations,
   seedSampleDataOnce,
   updateMemory,
   type MemoryWithLinks,
@@ -132,6 +137,21 @@ export const appRouter = router({
   app: router({
     aiStatus: publicProcedure.query(() => ({ mode: ENV.forgeApiUrl && ENV.forgeApiKey ? "live" as const : "demo" as const })),
   }),
+  conversations: router({
+    list: protectedProcedure.query(({ ctx }) => listConversations(ctx.user.id)),
+    create: protectedProcedure.input(z.object({ title: z.string().trim().min(1).max(240).optional() }))
+      .mutation(async ({ ctx, input }) => ({ id: await createConversation(ctx.user.id, input.title ?? "New conversation") })),
+    get: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const conversation = await getConversation(ctx.user.id, input.id);
+      if (!conversation) throw new TRPCError({ code: "NOT_FOUND", message: "Conversation not found." });
+      return conversation;
+    }),
+    messages: protectedProcedure.input(z.object({ conversationId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const messages = await getConversationMessages(ctx.user.id, input.conversationId);
+      if (!messages) throw new TRPCError({ code: "NOT_FOUND", message: "Conversation not found." });
+      return messages;
+    }),
+  }),
   memories: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       await seedSampleDataOnce(ctx.user.id);
@@ -184,13 +204,21 @@ export const appRouter = router({
       await updateMemory(ctx.user.id, memory.id, { summary: result.summary, keyConcepts: result.concepts, tags: result.tags, category: result.category, relatedIds: result.relatedIds });
       return { ...result, mode };
     }),
-    recall: protectedProcedure.input(z.object({ question: z.string().trim().min(1).max(2000) })).mutation(async ({ ctx, input }) => {
+    recall: protectedProcedure.input(z.object({ question: z.string().trim().min(1).max(2000), conversationId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
       await seedSampleDataOnce(ctx.user.id);
       const all = await getMemories(ctx.user.id);
       const ranked = rankRelevant(input.question, all);
       const selected = ranked.filter((item) => item.score > 0).slice(0, 6).map((item) => item.memory);
-      if (!all.length) return { answer: "Your archive is empty, so I don't have saved memories to answer from yet. Capture a note or a link and ask me again.", mode: "demo" as const, sources: [] };
-      if (!selected.length) return { answer: "I couldn't find a saved memory relevant to that question. Try another topic, phrase, or source name.", mode: "demo" as const, sources: [] };
+      if (!all.length) {
+        const answer = "Your archive is empty, so I don't have saved memories to answer from yet. Capture a note or a link and ask me again.";
+        const conversationId = await appendConversationTurn(ctx.user.id, { conversationId: input.conversationId, question: input.question, answer, citedMemoryIds: [] });
+        return { answer, mode: "demo" as const, sources: [], conversationId };
+      }
+      if (!selected.length) {
+        const answer = "I couldn't find a saved memory relevant to that question. Try another topic, phrase, or source name.";
+        const conversationId = await appendConversationTurn(ctx.user.id, { conversationId: input.conversationId, question: input.question, answer, citedMemoryIds: [] });
+        return { answer, mode: "demo" as const, sources: [], conversationId };
+      }
       const sources = selected;
       let answer: string | null = null;
       let mode: "live" | "demo" = "demo";
@@ -210,7 +238,13 @@ export const appRouter = router({
           ? `I found ${best.length} saved ${best.length === 1 ? "memory" : "memories"} that match your question. ${best.slice(0, 3).map((memory) => `“${memory.title}”${memory.summary ? ` — ${memory.summary}` : ` — ${memory.content.slice(0, 180)}${memory.content.length > 180 ? "…" : ""}`}`).join(" ")}`
           : "I couldn't find a clear answer in your saved notes. These are the closest recent memories in your archive; open a source or try a more specific topic.";
       }
-      return { answer, mode, sources };
+      const conversationId = await appendConversationTurn(ctx.user.id, {
+        conversationId: input.conversationId,
+        question: input.question,
+        answer,
+        citedMemoryIds: sources.map((memory) => memory.id),
+      });
+      return { answer, mode, sources, conversationId };
     }),
   }),
   collections: router({

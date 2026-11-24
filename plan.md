@@ -1,67 +1,70 @@
-# ECHO — The Internet's Memory
+# ECHO — The Internet’s Memory
 
-## Product and implementation plan
+## Upgrade plan
 
-ECHO is a responsive, dark-first personal knowledge workspace for saving digital memories, connecting them, and recalling them with source-grounded AI. The managed Webdev project uses its existing React 19 + TypeScript + Vite client, Express/tRPC server, Drizzle ORM and managed MySQL database. The checked-in dependency lock and starter are retained. Memory records, relationships, and collections live in MySQL; Drizzle schema and migrations define them, typed tRPC procedures implement CRUD/search/analytics/AI server calls, and the browser never receives server credentials. Client-side routing uses the starter's Wouter setup and React Query/tRPC provider. A graph view uses a dedicated graph visualization library with persisted edges as its source of truth. Keep the platform-provided Manus chat-completions service as the live-AI integration, with deterministic, plainly labelled demo intelligence whenever required credentials or service calls are unavailable; do not represent the demo as live AI. Search is keyword/tag/category-based with a clearly bounded future semantic-search option (semantic search is available only once embeddings are configured). Seed exploration memories once, without overwriting user edits on restart. No public release credentials or claims of production authentication are assumed.
+ECHO remains the existing personal knowledge workspace; this is an additive upgrade, not a rebuild. Preserve the React + TypeScript + Vite client, Express/tRPC server, Manus OAuth session, Drizzle/MySQL persistence, current user data, and working capture, memory CRUD, manual links, graph, collections, timeline, search, recall, settings, JSON export, and responsive behavior. Keep all private records account-scoped, using the authenticated `ctx.user.id` as the only owner identity. New reads, writes, file downloads, background work, and AI context retrieval must enforce ownership server-side. Migrations are additive and safe for the shared development/published database; never reset or seed over edited records.
+
+Current records include text, source metadata, category, tags/concepts, summaries, optional inline image data, persisted links, collections, and collection membership. Existing keyword recall and chat-completion enrichment remain useful fallbacks. The project’s documented Manus LLM contract supports chat completions and fetchable image/PDF inputs, but the inspected integration does not document an embeddings endpoint or a vector index. Therefore, semantic capabilities must be gated behind a verified embedding service and compatible retrieval path. Do not label keyword or deterministic matching as semantic search. If embeddings cannot be supplied by the configured platform service, explain the separate provider/credential requirement and expose an honest keyword/demo fallback rather than fake semantic controls.
+
+### Staged implementation
+
+**Stage 1 — Capture, unified search, and saved-content assistant.** Keep note/text, URL, image, and screenshot flows working; add supported PDF and text-document ingestion with explicit processing, success, and failure states. Capture YouTube URL metadata and a transcript only when an available, permitted transcript source succeeds; otherwise preserve the link and clearly offer manual transcript input. Extract and persist available title, description, main text, concepts, tags, source URL, and capture date; never report failed extraction as successful. Add owner-scoped document text/chunks and provenance sufficient to search saved and extracted content. Expand search with content type, topic, and date filters, short match explanations, and exact URL/content duplicate warnings. Persist assistant conversations/messages and source references. Retrieve owner-scoped passages before generation; render clickable citations that open the saved item, distinguish archive-grounded statements from any general model context, and state when the archive does not contain an answer. Semantic retrieval is enabled only after its provider is verified; lexical retrieval remains available.
+
+**Stage 2 — Knowledge graph and relationship discovery.** Retain React Flow, explicit user-created links, node opening, pan/zoom, and related-memory behavior. Add explainable relationship metadata (origin, short reason, confidence/strength, and review status) and filters for topic, content type, and connection strength. Keep automatic edges as reviewable suggestions until their basis is adequate; avoid weak/noisy links and never remove manual edges. Use semantic similarity and vector-derived edges only when the embedding integration is configured; otherwise make the limitation explicit and keep existing/manual or supported chat-generated relationships distinguishable.
+
+**Stage 3 — Intelligent collections and similarity review.** Retain manual collection creation, membership edits, counts, and deletion safeguards. Generate account-scoped collection suggestions from saved topics and content, avoid duplicate names/topics, and let the user accept, rename, or dismiss suggestions. Detect exact duplicates using normalized URLs and content hashes; show potential semantic matches only when embeddings are available. Offer to connect duplicate/similar items. Never merge or delete saved content automatically; any destructive action requires the user’s explicit confirmation.
+
+**Stage 4 — Knowledge Gaps, timeline, and optional recap.** Add an experimental Knowledge Gaps view whose suggestions are based on archive topics, counts, and relationships; phrase them as gaps in the saved collection, not assumptions about the user’s knowledge. Extend the timeline with saved items, newly discovered/accepted connections, collection activity, and date/topic/type filters, using persisted event timestamps. Add a persistent per-account daily recap preference and cached recap record; it is off by default, shown in-app only, and no email/push/other notification is sent unless the user explicitly enables a supported notification channel.
+
+**Cross-cutting interface redesign.** Redesign the actual application incrementally alongside the four stages. Keep ECHO’s orbit mark, “The Internet’s Memory” identity, violet/cyan signal, and dark-first research-workspace character while reducing visual clutter. Establish semantic CSS tokens for surfaces, text, borders, accents, focus, and status colors; implement a polished light theme and a persistent, accessible theme toggle (including dialogs, graph controls, and toaster). Rework the desktop shell as a collapsible sidebar with Overview, My Memory, Knowledge Graph, Collections, AI Assistant, Knowledge Gaps, Timeline, and a bottom Settings/Profile/theme area. Use a purposeful drawer or compact mobile navigation rather than squeezing the desktop sidebar onto small screens. Keep dashboard metrics derived from persistent data, make search/capture reachable, and improve hierarchy for graph, assistant citations, collections, loading/error/empty states. Use Manrope-style UI typography and DM Mono-style metadata where available, subtle short motion, visible focus, comfortable touch targets, sufficient contrast, and existing reduced-motion support. Controls must remain functional and must not imply unsupported capabilities.
+
+### Persistence and service boundaries
+
+- Extend the existing `memories`, `memory_links`, `collections`, and membership model through additive Drizzle migrations. Add normalized attachment metadata/content handling and extracted text/chunks so large binaries are not returned with every library query. Use an owner-checked, authenticated download route. The existing managed object-storage stable path is project-level; do not expose a raw stable URL as if it were private. Use it for personal files only after access semantics are verified and the application retains an owner-scoped index and authorized access flow. Otherwise keep bounded private file content in the account-scoped database path or defer unsupported file types transparently.
+- Add conversation and message records with owner IDs, timestamps, retrieval/source references, and safe query indexes. Add graph suggestion metadata without breaking existing manually persisted relationships. Persist accepted/dismissed collection suggestions, duplicate-review decisions, recap preference/results, and any generated insights that users expect to revisit.
+- Keep server-side LLM calls behind the existing protected tRPC procedures and `server/_core/llm.ts` service contract. Reuse the configured Manus chat service for supported tasks, validate structured outputs, bound context and file sizes, cache/version enrichment so unchanged content is not repeatedly processed, and handle provider errors, empty responses, and retries safely. Do not place API keys or private signed download URLs in browser code or logs.
+- Treat URL importing as an untrusted network boundary: HTTPS-only where appropriate, reject loopback/private/link-local destinations and unsafe redirects, and enforce time, byte, MIME, and parsing limits. A failed importer/parser must leave the saved record intact with an honest retryable status. Keep expensive extraction/indexing idempotent with persistent status so interrupted work can resume; do not introduce an unconfigured external queue or notification service.
+- Embedding integration is a feasibility gate, not an assumed platform feature. Confirm a documented model/endpoint and its vector dimensions, rate/error behavior, and suitable storage/query strategy before adding vectors. Until then, keep lexical retrieval operational and semantic-dependent controls clearly unavailable or explicitly demo-labeled.
 
 ### Project structure
 
-- `client/src/App.tsx`, `client/src/pages/`, `client/src/components/`: route shell, workspace navigation and dashboard, memories, graph, recall, timeline, collections and settings pages.
-- `client/src/lib/`: tRPC client and small formatting/search helpers.
-- `client/src/index.css`: ECHO design tokens, dark theme, responsive layout, graph and motion styles.
-- `server/routers.ts`: typed memory, collection, search, graph, analytics and recall/intelligence endpoints.
-- `server/db.ts`: MySQL/Drizzle persistence queries and idempotent starter-data initialization.
-- `drizzle/schema.ts`, `drizzle/`: users (starter auth table), memories, directed/undirected normalized memory links, collections and memory-collection joins; additive schema migration(s).
-- `public/manus-routes.json`: declared app page routes, kept synchronized with source.
-- `plan.md`, `TODO.md`: approved implementation/design and complete acceptance clauses/status.
+- `client/src/App.tsx`, `client/src/pages/Home.tsx`: retain route coverage and authenticated application shell; refactor navigation/theme wiring without replacing working data orchestration.
+- `client/src/pages/EchoViews.tsx` and focused page/view modules: dashboard, library/search, graph, assistant, timeline, collections, gaps, recap, and settings views. Keep route state and deep links aligned with `public/manus-routes.json`.
+- `client/src/components/MemoryDialog.tsx`, `MemoryDetailDialog.tsx`, and `GraphCanvas.tsx`: preserve capture/detail and React Flow behavior while adding supported document states, citations, graph filters, and accessible responsive interactions.
+- `client/src/contexts/ThemeContext.tsx`, `client/src/index.css`: persisted light/dark choice, semantic tokens, shared responsive shell, typography, focus, and reduced-motion rules.
+- `server/routers.ts`: authenticated tRPC API surface. Move substantial ingestion, retrieval, graph, and insight logic into focused `server/services/` modules rather than growing one router file.
+- `server/echo-db.ts`: owner-scoped MySQL/Drizzle reads and writes for memories, links, collections, conversations, attachments, chunks, suggestions, and recap data.
+- `server/storage.ts`: existing managed asset helpers; use only through verified owner-safe upload/download handling.
+- `drizzle/schema.ts`, `drizzle/`: schema and additive migrations; preserve existing migration history and all account data.
+- `public/manus-routes.json`: full route declaration, updated whenever app routes change.
+- `plan.md`, `TODO.md`: approved implementation/design plan and outcome criteria/status.
+
+### Platform and task boundaries
+
+The configured Webdev project is `wdp_793f694fe0d1ed56759aaaec`, using the existing MySQL and server capabilities; development and published environments share the database. No new provider secret is currently declared in Webdev configuration. Keep the existing session cookie/auth implementation and browser-safe/server-only credential split. Do not run destructive tests or create/delete user data to verify flows; use isolated fixtures/mocks or explicit user authorization. Do not submit live AI queries over personal saved memories during QA without authorization. The requested GitHub connection is separate: the canonical repository remains Manus-managed, auto-publish is off, and code must not be transferred until the user confirms the exact GitHub owner/repository and destination.
 
 ## Design
 
-**Design Movement:** Quietly futuristic editorial software, borrowing the precision of Linear and the expressive spatial feel of a research instrument without copying either.
+**Design Movement:** Original, quietly futuristic editorial software: a premium knowledge instrument with Linear-like precision, Raycast-like focus, and thoughtful information organization, without copying any product.
 
-**Core Principles:** (1) The saved knowledge is the hero; chrome stays calm. (2) Spatial connections are legible at a glance. (3) Every AI claim has visible provenance or a demo label. (4) Capture and recall stay one action away.
+**Core Principles:** (1) Saved knowledge is the hero; chrome stays calm. (2) Connections and provenance are visible. (3) Every control reflects a real, reversible action. (4) The interface remains readable and useful in either theme and on any screen size.
 
-**Color Philosophy:** Midnight ink and layered charcoal create a focused archive; one ownable ultraviolet-cyan signal marks active knowledge and AI, while muted blue and orchid distinguish topic clusters. Color is semantic rather than ornamental, and text contrast remains high.
+**Color Philosophy:** Retain ECHO’s ownable ultraviolet and soft cyan as sparse signals for active knowledge and verified connections. Use deep ink, muted charcoal, and readable off-white for the default dark mode; build a warm, clean light palette from the same semantic tokens rather than inverting every color. Keep borders and status colors subtle, with accessible contrast and no excessive neon or gradients.
 
-**Layout Paradigm:** An anchored, narrow navigation rail opens into a fluid editorial workspace. The dashboard uses asymmetrical information bands rather than equal cards: a welcoming search/capture masthead, a wide graph preview beside a narrow activity column, then recent memories and topic clusters. On small screens the rail becomes a compact top bar and content stacks without horizontal overflow.
+**Layout Paradigm:** A collapsible desktop sidebar anchors a fluid research workspace. Overview prioritizes a search/capture masthead, archive-derived metrics, recent saved content, and useful insight/activity bands. Research views give their primary task the space: a navigable graph with an information panel, an assistant with a focused transcript and source rail, and timeline/collection views organized by meaningful filters. Tablet and mobile use dedicated compact navigation and stacked layouts with predictable scroll ownership.
 
-**Signature Elements:** A small ultraviolet-to-cyan echo-ring mark (overlapping memory ripples); hairline connection paths and softly glowing graph nodes; a slim vertical signal line for chronological memory history.
+**Signature Elements:** The existing open echo-ring mark; thin, purposeful relationship lines and restrained violet/cyan node states; a slim chronological signal for the memory timeline.
 
-**Interaction Philosophy:** Direct, reversible, and source-aware. Capture dialogs validate before save; cards open readable detail/edit views; deletion gets a deliberate confirmation; graph nodes open their saved source; search and filters update real results; empty/loading/error states explain the next useful action.
+**Interaction Philosophy:** Direct, reversible, and source-aware. Show loading/progress, success, failure, and empty states for real operations. Keep user review between AI suggestions and persisted organization changes. Source cards open their own saved records; destructive operations remain deliberate.
 
-**Animation:** Short 160–240 ms ease-out transitions for view changes, hover and drawer reveal; restrained node pulse on selection and a gentle one-time entrance for key content. Respect `prefers-reduced-motion`. Avoid ambient motion that distracts from reading.
+**Animation:** Use short, restrained transitions (roughly 160–220 ms) for navigation, drawers, selection, and button feedback. Use skeletons during real loading and subtle graph-selection emphasis; avoid continuous ambient movement. Honor `prefers-reduced-motion` and never delay access to content for animation.
 
-**Typography System:** Inter (or a close system sans fallback) for UI and body, with a restrained medium-weight display scale for page headings; compact monospaced labels only for metadata such as dates and source domains. Clear 12/14/16/24/32 px hierarchy; generous line-height for memory text.
+**Typography System:** Manrope or a close available sans-serif for interface/body, DM Mono or a system monospace only for dates/domains/technical metadata. Use a consistent readable scale and generous body line-height; avoid tiny labels on mobile.
 
-**Brand Essence:** A private-feeling map of the things you have learned, saved for people who collect knowledge across the web; different because it reconnects saved fragments instead of leaving them in a pile. Personality: lucid, curious, composed.
+**Brand Essence:** A private-feeling map of saved knowledge for people who collect ideas across the web; different because it reconnects saved fragments instead of leaving them in a pile. Personality: lucid, curious, composed.
 
-**Brand Voice:** Concise, warm, observant; never pretend the assistant remembers something not in the archive. Headlines and CTAs use active verbs. Examples: “Your ideas are finding each other.” “Save a thought. Keep its context.”
+**Brand Voice:** Concise, warm, observant, and careful about what the archive can prove. CTAs use active verbs; AI never claims an unsupported memory. Examples: “Your ideas are finding each other.” “Save a thought. Keep its context.”
 
-**Wordmark & Logo:** A custom ECHO wordmark paired with three offset, open concentric arcs whose gaps suggest an echo returning; the compact mark uses only those arcs.
+**Wordmark & Logo:** Preserve the current ECHO wordmark and custom open echo-ring/orbit mark. Refine its spacing and state colors as needed; do not replace it with a generic text heading or unrelated generated symbol.
 
-**Signature Brand Color:** Echo ultraviolet `#9B8CFF`, paired with electric cyan `#57D8E8` for connected states.
-
-## Application behavior
-
-- All seven requested navigation destinations are implemented as working app pages: Dashboard, All Memories, Knowledge Graph, AI Recall, Timeline, Collections and Settings.
-- The dashboard's statistics, recent activity, recent memories, common topics and graph preview derive from persistent records and relationships, not hardcoded dashboard totals.
-- Memory capture/edit handles text, URL, note and image/screenshot metadata plus title, content, source, date, category and tags. CRUD validates fields and preserves creation date on edits.
-- Persisted relationships drive both the graph and related-memory lists. The graph supports zoom/pan and selectable nodes, with grouped topic presentation and a detail affordance.
-- Keyword search and category/tag filters are functional and highlight matching text. Semantic search is not claimed unless embeddings are configured.
-- Timeline is chronological and exposes saved dates and memory topics.
-- Recall sends only the user's question and relevant saved memory excerpts to the server-side platform LLM when available; answers expose source memories. Deterministic local/demo recall is visibly marked when live AI is unavailable and never fabricates a live response.
-- Helpful initial sample content is seeded idempotently and does not reset edited user records after restart.
-- Responsive behavior, loading, error, validation and empty states are included. User-facing destructive actions are deliberate.
-
-## Platform and material constraints
-
-- Project initialized with managed server and MySQL database; dev and published deployment share that DB. Schema migration and one-time seed behavior must therefore be additive/idempotent and no testing action may wipe it.
-- Live AI uses `MANUS_API_URL` and `MANUS_API_KEY` from the server process at call time. No AI secret is emitted to browser code. On missing configuration or service failure the UI explicitly indicates demo intelligence.
-- Package manager is pinned to pnpm 10.18.0. Keep lifecycle policy in the existing `pnpm-workspace.yaml`; verify dependencies and TypeScript/build using starter commands.
-- Declare the full static page route manifest before the first dev-server launch. Run the dev server through Webdev `runtime/dev-commands`, on its configured port.
-- No deployment is assumed; publication is separate. Retain/adjust only valid starter deployment defaults unless explicitly publishing is requested.
-
-
-## Privacy architecture refinement
-
-ECHO memories contain personal notes and browsing context, so the workspace now uses the existing Manus OAuth session before showing private data. The starter's real signed-in identity is resolved by its authenticated tRPC context; all memory/collection/AI procedures use `protectedProcedure`, and SQL queries scope reads and writes to the signed-in `users.id`. New memories/collections carry that owner foreign key; graph links are accepted only between records belonging to that same owner. Signed-out visitors see an explicit sign-in screen. Initial sample records are seeded once per account with stable seed keys, without overwriting edited records or restoring user-deleted samples. The starter's fixed `webdev_app_session` cookie and `SameSite=None; Secure` Preview behavior remain intact.
+**Signature Brand Color:** Echo ultraviolet `#8B7CFF`, paired with soft cyan `#63D9E8` for connected/verified states.

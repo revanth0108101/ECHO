@@ -1,30 +1,39 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation } from "wouter";
 import {
-  ArrowRight, BookOpen, CalendarDays, ChevronDown, CircleHelp, Command, FileText,
-  FolderHeart, LogOut, MessageCircle, Network, Plus, Search, Settings2, Sparkles,
+  ArrowRight, BookOpen, CalendarDays, ChevronDown, CircleHelp, Command, Ellipsis,
+  FileText, FolderHeart, Lightbulb, LogOut, MessageCircle, Network, PanelLeftClose,
+  PanelLeftOpen, Plus, Search, Settings2, Sparkles, UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
 import MemoryDetailDialog from "@/components/MemoryDetailDialog";
 import MemoryDialog from "@/components/MemoryDialog";
+import ThemeToggle from "@/components/ThemeToggle";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import type { MemoryDraft, MemoryRecord } from "@/lib/echo";
 import {
-  CollectionsView, DashboardView, KnowledgeGraphView, LibraryView, RecallView, SettingsView, TimelineView,
+  CollectionsView, DashboardView, KnowledgeGapsView, KnowledgeGraphView, LibraryView, ProfileView,
+  RecallView, SettingsView, TimelineView,
 } from "./EchoViews";
 
 const navItems = [
-  { path: "/", label: "Dashboard", icon: Command },
-  { path: "/memories", label: "All Memories", icon: BookOpen },
+  { path: "/", label: "Overview", icon: Command },
+  { path: "/memories", label: "My Memory", icon: BookOpen },
   { path: "/graph", label: "Knowledge Graph", icon: Network },
-  { path: "/recall", label: "AI Recall", icon: MessageCircle },
-  { path: "/timeline", label: "Timeline", icon: CalendarDays },
   { path: "/collections", label: "Collections", icon: FolderHeart },
-  { path: "/settings", label: "Settings", icon: Settings2 },
+  { path: "/assistant", label: "AI Assistant", icon: MessageCircle },
+  { path: "/gaps", label: "Knowledge Gaps", icon: Lightbulb },
+  { path: "/timeline", label: "Timeline", icon: CalendarDays },
 ];
-const pageByPath = new Map(navItems.map((item) => [item.path, item.label]));
+const utilityItems = [
+  { path: "/settings", label: "Settings", icon: Settings2 },
+  { path: "/profile", label: "Profile", icon: UserRound },
+];
+const pageByPath = new Map([...navItems, ...utilityItems, { path: "/recall", label: "AI Assistant" }].map((item) => [item.path, item.label]));
+const mobilePrimary = navItems.filter((item) => ["/", "/memories", "/graph", "/assistant"].includes(item.path));
+const mobileMore = navItems.filter((item) => !mobilePrimary.some((primary) => primary.path === item.path)).concat(utilityItems);
 
 function LogoMark({ large = false }: { large?: boolean }) {
   return <span className={`echo-mark ${large ? "echo-mark-large" : ""}`} aria-hidden="true"><i /><b /><em /></span>;
@@ -59,6 +68,9 @@ export default function Home() {
   const [editing, setEditing] = useState<MemoryRecord | null>(null);
   const [selected, setSelected] = useState<MemoryRecord | null>(null);
   const [analyzingId, setAnalyzingId] = useState<number | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
   const memoriesQuery = trpc.memories.list.useQuery(undefined, { enabled: auth.isAuthenticated, retry: 1, staleTime: 10_000 });
   const collectionsQuery = trpc.collections.list.useQuery(undefined, { enabled: auth.isAuthenticated, retry: 1, staleTime: 10_000 });
@@ -72,10 +84,23 @@ export default function Home() {
   const memories = memoriesQuery.data ?? [];
   const collections = collectionsQuery.data ?? [];
   const aiMode = aiStatusQuery.data?.mode ?? "demo";
-  const currentPath = pageByPath.has(location) ? location : "/";
-  const activePage = pageByPath.get(currentPath) ?? "Dashboard";
+  const currentPath = location === "/recall" ? "/assistant" : pageByPath.has(location) ? location : "/";
+  const activePage = pageByPath.get(currentPath) ?? "Overview";
   const selectedMemory = selected ? memories.find((memory) => memory.id === selected.id) ?? selected : null;
 
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === "Escape") setMobileMoreOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const openCapture = () => { setSelected(null); setEditing(null); setCaptureOpen(true); setMobileMoreOpen(false); };
   const refreshWorkspace = async () => {
     await Promise.all([utils.memories.list.invalidate(), utils.collections.list.invalidate()]);
   };
@@ -91,8 +116,7 @@ export default function Home() {
     if (editing) {
       const { createdAt: _preservedDate, ...updateData } = base;
       await updateMutation.mutateAsync({ id: editing.id, data: updateData });
-    }
-    else await createMutation.mutateAsync(base);
+    } else await createMutation.mutateAsync(base);
     setCaptureOpen(false); setEditing(null); setSelected(null);
     await refreshWorkspace();
     toast.success(editing ? "Memory updated" : "Memory saved", { description: "It is now part of your archive." });
@@ -132,33 +156,43 @@ export default function Home() {
   if (collectionsQuery.isError) return <main className="app-error"><Brand /><span className="error-orbit"><CircleHelp size={21} /></span><h1>Your collections couldn't load.</h1><p>Your memories are safe. Retry to reload the workspace's collections and membership data.</p><button className="button button-primary" onClick={() => void collectionsQuery.refetch()}>Try again <ArrowRight size={15} /></button><button className="text-action" onClick={() => void auth.logout()}>Sign out</button></main>;
 
   const globalSearch = (event: FormEvent) => { event.preventDefault(); if (query.trim()) navigate("/memories"); };
-  return <div className="app-shell">
+  return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="app-sidebar">
-      <Link href="/" className="sidebar-brand"><Brand /></Link>
+      <div className="sidebar-brand-row"><Link href="/" className="sidebar-brand" aria-label="ECHO overview"><Brand /></Link><button className="sidebar-collapse icon-button" aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>{sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
       <div className="sidebar-section-label">YOUR SPACE</div>
       <nav className="main-nav" aria-label="Main navigation">{navItems.map((item) => {
         const Icon = item.icon; const active = currentPath === item.path;
-        return <Link key={item.path} href={item.path} className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined}><Icon size={17} strokeWidth={active ? 2 : 1.8} /><span>{item.label}</span>{active && <i />}</Link>;
+        return <Link key={item.path} href={item.path} className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} title={sidebarCollapsed ? item.label : undefined}><Icon size={17} strokeWidth={active ? 2 : 1.8} /><span>{item.label}</span>{active && <i />}</Link>;
       })}</nav>
-      <div className="sidebar-lower"><button className="sidebar-capture" onClick={() => { setSelected(null); setEditing(null); setCaptureOpen(true); }}><span><Plus size={15} /></span>Quick capture<kbd>⌘ K</kbd></button>
+      <div className="sidebar-lower">
+        <button className="sidebar-capture" onClick={openCapture}><span><Plus size={15} /></span><b>Quick capture</b></button>
+        <nav className="utility-nav" aria-label="Account navigation">{utilityItems.map((item) => { const Icon = item.icon; const active = currentPath === item.path; return <Link key={item.path} href={item.path} className={`nav-item utility-nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} title={sidebarCollapsed ? item.label : undefined}><Icon size={16} /><span>{item.label}</span>{active && <i />}</Link>; })}</nav>
+        <ThemeToggle />
         <div className="sidebar-account"><span className="account-avatar">{(auth.user?.name || auth.user?.email || "E").slice(0, 1).toUpperCase()}</span><span className="account-label"><strong>{auth.user?.name || "Your ECHO space"}</strong><small>{auth.user?.email || "Private workspace"}</small></span><button title="Sign out" aria-label="Sign out" className="icon-button account-logout" onClick={() => void auth.logout()}><LogOut size={15} /></button></div>
       </div>
     </aside>
     <main className="workspace-main">
       <header className="topbar"><div className="topbar-title"><span className="topbar-mobile-brand"><Brand /></span><span className="breadcrumb-root">Workspace</span><span className="breadcrumb-slash">/</span><strong>{activePage}</strong><ChevronDown size={13} className="breadcrumb-chevron" /></div>
-        <div className="topbar-actions"><form className="global-search" role="search" onSubmit={globalSearch}><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search your memory" aria-label="Search memories" /><kbd>⌘ K</kbd></form><button className="topbar-capture" aria-label="Capture a memory" title="Capture a memory" onClick={() => { setSelected(null); setEditing(null); setCaptureOpen(true); }}><Plus size={17} /></button><button className="topbar-avatar" title={auth.user?.name ?? "Account"} onClick={() => navigate("/settings")}>{(auth.user?.name || auth.user?.email || "E").slice(0, 1).toUpperCase()}</button></div>
+        <div className="topbar-actions"><form className="global-search" role="search" onSubmit={globalSearch}><Search size={15} /><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search your memory" aria-label="Search memories" /><kbd>⌘ K</kbd></form><button className="topbar-capture" aria-label="Capture a memory" title="Capture a memory" onClick={openCapture}><Plus size={17} /></button><Link className="topbar-avatar" aria-label="Open profile" title={auth.user?.name ?? "Profile"} href="/profile">{(auth.user?.name || auth.user?.email || "E").slice(0, 1).toUpperCase()}</Link></div>
       </header>
       <section className="page-content" key={currentPath}>
-        {currentPath === "/" && <DashboardView memories={memories} onOpen={openMemory} onCapture={() => setCaptureOpen(true)} onNavigate={navigate} onSearch={setQuery} />}
-        {currentPath === "/memories" && <LibraryView memories={memories} onOpen={openMemory} onCapture={() => setCaptureOpen(true)} query={query} setQuery={setQuery} />}
+        {currentPath === "/" && <DashboardView memories={memories} collections={collections} onOpen={openMemory} onCapture={openCapture} onNavigate={navigate} onSearch={setQuery} />}
+        {currentPath === "/memories" && <LibraryView memories={memories} onOpen={openMemory} onCapture={openCapture} query={query} setQuery={setQuery} />}
         {currentPath === "/graph" && <KnowledgeGraphView memories={memories} onOpen={openMemory} />}
-        {currentPath === "/recall" && <RecallView onOpen={openMemory} aiMode={aiMode} />}
+        {currentPath === "/assistant" && <RecallView onOpen={openMemory} aiMode={aiMode} memories={memories} />}
         {currentPath === "/timeline" && <TimelineView memories={memories} onOpen={openMemory} />}
         {currentPath === "/collections" && <CollectionsView collections={collections} memories={memories} onOpen={openMemory} onCreate={saveCollection} onDelete={deleteCollection} />}
         {currentPath === "/settings" && <SettingsView memories={memories} aiMode={aiMode} user={auth.user} onLogout={() => void auth.logout()} loggingOut={auth.loading} />}
+        {currentPath === "/profile" && <ProfileView user={auth.user} onLogout={() => void auth.logout()} loggingOut={auth.loading} />}
+        {currentPath === "/gaps" && <KnowledgeGapsView memories={memories} />}
       </section>
       <footer className="workspace-footer"><span><span className="footer-pulse" />Your archive is in sync</span><span><LogoMark /> A little more connected.</span></footer>
     </main>
+    <nav className="mobile-nav" aria-label="Mobile navigation">
+      {mobilePrimary.map((item) => { const Icon = item.icon; const active = currentPath === item.path; return <Link key={item.path} href={item.path} className={`mobile-nav-item ${active ? "active" : ""}`} aria-label={item.label} aria-current={active ? "page" : undefined}><Icon size={18} /><span>{item.label}</span></Link>; })}
+      <button className={`mobile-nav-item ${mobileMoreOpen ? "active" : ""}`} aria-label="More destinations" aria-expanded={mobileMoreOpen} onClick={() => setMobileMoreOpen((value) => !value)}><Ellipsis size={20} /><span>More</span></button>
+    </nav>
+    {mobileMoreOpen && <div className="mobile-more-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setMobileMoreOpen(false); }}><section className="mobile-more-sheet" aria-label="More destinations"><header><strong>More in ECHO</strong><button className="icon-button" aria-label="Close menu" onClick={() => setMobileMoreOpen(false)}>×</button></header>{mobileMore.map((item) => { const Icon = item.icon; return <Link key={item.path} href={item.path} className="mobile-more-item" onClick={() => setMobileMoreOpen(false)}><Icon size={17} /><span>{item.label}</span><ArrowRight size={14} /></Link>; })}<div className="mobile-more-theme"><span>Appearance</span><ThemeToggle /></div></section></div>}
     {(captureOpen || editing) && <MemoryDialog initial={editing} memories={memories} collections={collections} onClose={() => { setCaptureOpen(false); setEditing(null); }} onSave={saveMemory} />}
     {selectedMemory && <MemoryDetailDialog memory={selectedMemory} memories={memories} mode={aiMode} analyzing={analyzingId === selectedMemory.id} onClose={() => setSelected(null)} onEdit={openEdit} onDelete={(memory) => void deleteMemory(memory)} onEnrich={(id) => void enrichMemory(id)} onOpenRelated={openMemory} />}
   </div>;

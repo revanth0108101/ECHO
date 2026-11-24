@@ -2,6 +2,8 @@ import { and, desc, eq, inArray, or } from "drizzle-orm";
 import {
   collectionMemories,
   collections,
+  conversationMessages,
+  conversations,
   memories,
   memoryLinks,
   workspaceMeta,
@@ -36,6 +38,91 @@ function insertedId(result: unknown): number {
   const id = first?.insertId ?? object?.insertId;
   if (id === undefined) throw new Error("Database did not return the new record id");
   return Number(id);
+}
+
+export async function listConversations(ownerId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const rows = await db.select().from(conversations).where(eq(conversations.ownerId, ownerId)).orderBy(desc(conversations.updatedAt));
+  return rows.map(({ ownerId: _ownerId, ...conversation }) => conversation);
+}
+
+export async function createConversation(ownerId: number, title: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const result = await db.insert(conversations).values({ ownerId, title });
+  return insertedId(result);
+}
+
+export async function getConversation(ownerId: number, conversationId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const rows = await db.select().from(conversations)
+    .where(and(eq(conversations.id, conversationId), eq(conversations.ownerId, ownerId))).limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const messages = await db.select().from(conversationMessages)
+    .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.ownerId, ownerId)))
+    .orderBy(conversationMessages.createdAt, conversationMessages.id);
+  const { ownerId: _ownerId, ...conversation } = row;
+  return {
+    ...conversation,
+    messages: messages.map(({ ownerId: _messageOwnerId, ...message }) => ({
+      ...message,
+      citedMemoryIds: Array.isArray(message.citedMemoryIds) ? message.citedMemoryIds : [],
+    })),
+  };
+}
+
+export async function getConversationMessages(ownerId: number, conversationId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const owned = await db.select({ id: conversations.id }).from(conversations)
+    .where(and(eq(conversations.id, conversationId), eq(conversations.ownerId, ownerId))).limit(1);
+  if (!owned.length) return null;
+  const rows = await db.select().from(conversationMessages)
+    .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.ownerId, ownerId)))
+    .orderBy(conversationMessages.createdAt, conversationMessages.id);
+  return rows.map(({ ownerId: _ownerId, ...message }) => ({
+    ...message,
+    citedMemoryIds: Array.isArray(message.citedMemoryIds) ? message.citedMemoryIds : [],
+  }));
+}
+
+export async function appendConversationTurn(
+  ownerId: number,
+  input: { conversationId?: number; question: string; answer: string; citedMemoryIds: number[] },
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+
+  let conversationId = input.conversationId;
+  if (conversationId !== undefined) {
+    const owned = await db.select({ id: conversations.id }).from(conversations)
+      .where(and(eq(conversations.id, conversationId), eq(conversations.ownerId, ownerId))).limit(1);
+    if (!owned.length) throw new Error("Conversation not found.");
+  } else {
+    const created = await db.insert(conversations).values({
+      ownerId,
+      title: input.question.trim().slice(0, 240) || "New conversation",
+    });
+    conversationId = insertedId(created);
+  }
+
+  const citedMemoryIds = [...new Set(input.citedMemoryIds)];
+  if (citedMemoryIds.length) {
+    const ownedMemories = await db.select({ id: memories.id }).from(memories)
+      .where(and(eq(memories.ownerId, ownerId), inArray(memories.id, citedMemoryIds)));
+    if (ownedMemories.length !== citedMemoryIds.length) throw new Error("One or more cited memories are not available.");
+  }
+
+  await db.insert(conversationMessages).values([
+    { conversationId, ownerId, role: "question", content: input.question, citedMemoryIds: [] },
+    { conversationId, ownerId, role: "answer", content: input.answer, citedMemoryIds },
+  ]);
+  await db.update(conversations).set({ updatedAt: new Date() })
+    .where(and(eq(conversations.id, conversationId), eq(conversations.ownerId, ownerId)));
+  return conversationId;
 }
 
 async function setLinks(ownerId: number, memoryId: number, relatedIds: number[]) {
