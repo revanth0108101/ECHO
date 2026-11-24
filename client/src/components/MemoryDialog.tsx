@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ImagePlus, Link2, NotebookPen, Sparkles, X } from "lucide-react";
 import type { CollectionRecord, MemoryDraft, MemoryRecord } from "@/lib/echo";
 import { CATEGORY_OPTIONS } from "@/lib/echo";
@@ -17,6 +17,9 @@ const localDate = (date?: Date) => {
 };
 
 export default function MemoryDialog({ initial, memories, collections, onClose, onSave }: Props) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
   const [title, setTitle] = useState(initial?.title ?? "");
   const [content, setContent] = useState(initial?.content ?? "");
   const [source, setSource] = useState(initial?.source ?? "");
@@ -25,8 +28,8 @@ export default function MemoryDialog({ initial, memories, collections, onClose, 
   const [category, setCategory] = useState(initial?.category ?? "Ideas & notes");
   const [tags, setTags] = useState(initial?.tags.join(", ") ?? "");
   const [date, setDate] = useState(localDate(initial?.createdAt));
-  const [attachmentData, setAttachmentData] = useState<string | null>(initial?.attachmentData ?? null);
-  const [attachmentName, setAttachmentName] = useState<string | null>(initial?.attachmentName ?? null);
+  const [attachmentData, setAttachmentData] = useState<string | null | undefined>(initial?.attachmentData);
+  const [attachmentName, setAttachmentName] = useState<string | null | undefined>(initial?.attachmentName);
   const [relatedIds, setRelatedIds] = useState<number[]>(initial?.relatedIds ?? []);
   const [collectionIds, setCollectionIds] = useState<number[]>(initial?.collectionIds ?? []);
   const [error, setError] = useState("");
@@ -34,10 +37,21 @@ export default function MemoryDialog({ initial, memories, collections, onClose, 
   const availableRelated = useMemo(() => memories.filter((memory) => memory.id !== initial?.id), [memories, initial?.id]);
 
   useEffect(() => {
-    const handler = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = () => [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])];
+    focusable()[0]?.focus();
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeRef.current();
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (!elements.length) { event.preventDefault(); dialogRef.current?.focus(); return; }
+      const first = elements[0]!; const last = elements[elements.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", handler);
+    return () => { document.removeEventListener("keydown", handler); previous?.focus(); };
+  }, []);
 
   const toggle = (list: number[], setList: (next: number[]) => void, id: number) => {
     setList(list.includes(id) ? list.filter((value) => value !== id) : [...list, id]);
@@ -46,7 +60,7 @@ export default function MemoryDialog({ initial, memories, collections, onClose, 
   const loadImage = (file?: File) => {
     setError("");
     if (!file) return;
-    if (!file.type.startsWith("image/")) { setError("Choose an image or screenshot file."); return; }
+    if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type)) { setError("Choose a PNG, JPEG, WebP, or GIF image."); return; }
     if (file.size > 8 * 1024 * 1024) { setError("For this workspace, images must be 8 MB or smaller."); return; }
     const reader = new FileReader();
     reader.onload = () => {
@@ -83,7 +97,7 @@ export default function MemoryDialog({ initial, memories, collections, onClose, 
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memory-dialog-title">
+      <section ref={dialogRef} className="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memory-dialog-title" tabIndex={-1}>
         <header className="dialog-header">
           <div className="dialog-title-icon"><NotebookPen size={17} /></div>
           <div><span className="eyebrow">{initial ? "REFINE YOUR ARCHIVE" : "ADD TO YOUR MEMORY"}</span><h2 id="memory-dialog-title">{initial ? "Edit memory" : "Capture a thought"}</h2></div>
@@ -127,9 +141,9 @@ export default function MemoryDialog({ initial, memories, collections, onClose, 
           <div className="field-label">Image or screenshot <span className="field-hint inline-hint">up to 8 MB</span>
             <label className="image-dropzone">
               {attachmentData ? <img src={attachmentData} alt={attachmentName ?? "Attached memory"} /> : <span className="image-drop-icon"><ImagePlus size={20} /></span>}
-              <span className="image-drop-copy"><strong>{attachmentData ? attachmentName : "Attach an image or screenshot"}</strong><small>{attachmentData ? "Choose another file to replace it" : "JPG, PNG, WebP, GIF · stored with this memory"}</small></span>
+              <span className="image-drop-copy"><strong>{attachmentName || (initial?.hasAttachment && attachmentData === undefined ? "Existing image attached" : "Attach an image or screenshot")}</strong><small>{attachmentData ? "Choose another file to replace it" : "PNG, JPG, WebP, GIF · up to 8 MB"}</small></span>
               <input aria-label="Choose image or screenshot" type="file" accept="image/*" onChange={(event) => loadImage(event.target.files?.[0])} />
-              {attachmentData && <button type="button" className="image-remove" aria-label="Remove attached image" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setAttachmentData(null); setAttachmentName(null); }}><X size={14} /></button>}
+              {(attachmentData || initial?.hasAttachment) && <button type="button" className="image-remove" aria-label="Remove attached image" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setAttachmentData(null); setAttachmentName(null); }}><X size={14} /></button>}
             </label>
           </div>
           {availableRelated.length > 0 && <fieldset className="choice-fieldset"><legend>Connect related memories</legend><div className="choice-list">{availableRelated.slice(0, 8).map((memory) => <label key={memory.id} className="choice-row"><input type="checkbox" checked={relatedIds.includes(memory.id)} onChange={() => toggle(relatedIds, setRelatedIds, memory.id)} /><span>{memory.title}</span></label>)}</div></fieldset>}

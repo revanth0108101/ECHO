@@ -89,7 +89,7 @@ export const conversationMessages = mysqlTable("conversation_messages", {
   ownerId: int("ownerId").notNull().references(() => users.id, { onDelete: "cascade" }),
   role: mysqlEnum("role", ["question", "answer"]).notNull(),
   content: longtext("content").notNull(),
-  citedMemoryIds: json("citedMemoryIds").$type<number[]>().notNull(),
+  citedMemoryIds: json("citedMemoryIds").$type<number[] | { memoryIds: number[]; mode: "live" | "demo" }>().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("conversation_messages_owner_conversation_created_idx").on(table.ownerId, table.conversationId, table.createdAt),

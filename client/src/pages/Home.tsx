@@ -12,7 +12,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
-import type { MemoryDraft, MemoryRecord } from "@/lib/echo";
+import type { LegacySampleRecord, MemoryDraft, MemoryRecord } from "@/lib/echo";
 import {
   CollectionsView, DashboardView, KnowledgeGapsView, KnowledgeGraphView, LibraryView, ProfileView,
   RecallView, SettingsView, TimelineView,
@@ -74,6 +74,7 @@ export default function Home() {
   const utils = trpc.useUtils();
   const memoriesQuery = trpc.memories.list.useQuery(undefined, { enabled: auth.isAuthenticated, retry: 1, staleTime: 10_000 });
   const collectionsQuery = trpc.collections.list.useQuery(undefined, { enabled: auth.isAuthenticated, retry: 1, staleTime: 10_000 });
+  const legacySamplesQuery = trpc.memories.legacySamples.useQuery(undefined, { enabled: auth.isAuthenticated, retry: 1, staleTime: 10_000 });
   const aiStatusQuery = trpc.app.aiStatus.useQuery(undefined, { retry: 1, staleTime: 30_000 });
   const createMutation = trpc.memories.create.useMutation();
   const updateMutation = trpc.memories.update.useMutation();
@@ -81,8 +82,10 @@ export default function Home() {
   const enrichMutation = trpc.memories.enrich.useMutation();
   const createCollectionMutation = trpc.collections.create.useMutation();
   const removeCollectionMutation = trpc.collections.remove.useMutation();
+  const promoteLegacyMutation = trpc.memories.promoteLegacySample.useMutation();
   const memories = memoriesQuery.data ?? [];
   const collections = collectionsQuery.data ?? [];
+  const legacySamples = legacySamplesQuery.data ?? [];
   const aiMode = aiStatusQuery.data?.mode ?? "demo";
   const currentPath = location === "/recall" ? "/assistant" : pageByPath.has(location) ? location : "/";
   const activePage = pageByPath.get(currentPath) ?? "Overview";
@@ -110,7 +113,7 @@ export default function Home() {
     const base = {
       title: draft.title, content: draft.content, source: draft.source || null, sourceUrl: draft.sourceUrl || null,
       sourceType: draft.sourceType, category: draft.category, tags: draft.tags,
-      attachmentData: draft.attachmentData, attachmentName: draft.attachmentName,
+      ...(draft.attachmentData !== undefined ? { attachmentData: draft.attachmentData, attachmentName: draft.attachmentName ?? null } : {}),
       createdAt: draft.createdAt, relatedIds: draft.relatedIds, collectionIds: draft.collectionIds,
     };
     if (editing) {
@@ -147,6 +150,13 @@ export default function Home() {
     try { await removeCollectionMutation.mutateAsync({ id: collection.id }); await refreshWorkspace(); toast.success("Collection deleted", { description: "Its memories remain in your archive." }); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Collection could not be deleted."); }
   };
+  const promoteLegacy = async (sample: LegacySampleRecord) => {
+    try {
+      await promoteLegacyMutation.mutateAsync({ id: sample.id });
+      await Promise.all([utils.memories.list.invalidate(), utils.memories.legacySamples.invalidate(), utils.collections.list.invalidate()]);
+      toast.success("Sample memory moved to your archive", { description: "The saved content was preserved." });
+    } catch (error) { toast.error(error instanceof Error ? error.message : "This sample could not be moved."); }
+  };
   const startSignIn = () => startLogin();
 
   if (auth.loading) return <LoadingScreen />;
@@ -177,12 +187,12 @@ export default function Home() {
       </header>
       <section className="page-content" key={currentPath}>
         {currentPath === "/" && <DashboardView memories={memories} collections={collections} onOpen={openMemory} onCapture={openCapture} onNavigate={navigate} onSearch={setQuery} />}
-        {currentPath === "/memories" && <LibraryView memories={memories} onOpen={openMemory} onCapture={openCapture} query={query} setQuery={setQuery} />}
+        {currentPath === "/memories" && <LibraryView memories={memories} onOpen={openMemory} onCapture={openCapture} query={query} setQuery={setQuery} legacySampleCount={legacySamples.length} onReviewLegacy={() => navigate("/settings")} />}
         {currentPath === "/graph" && <KnowledgeGraphView memories={memories} onOpen={openMemory} />}
         {currentPath === "/assistant" && <RecallView onOpen={openMemory} aiMode={aiMode} memories={memories} />}
         {currentPath === "/timeline" && <TimelineView memories={memories} onOpen={openMemory} />}
         {currentPath === "/collections" && <CollectionsView collections={collections} memories={memories} onOpen={openMemory} onCreate={saveCollection} onDelete={deleteCollection} />}
-        {currentPath === "/settings" && <SettingsView memories={memories} aiMode={aiMode} user={auth.user} onLogout={() => void auth.logout()} loggingOut={auth.loading} />}
+        {currentPath === "/settings" && <SettingsView memories={memories} legacySamples={legacySamples} onPromoteLegacy={(sample) => void promoteLegacy(sample)} aiMode={aiMode} user={auth.user} onLogout={() => void auth.logout()} loggingOut={auth.loading} />}
         {currentPath === "/profile" && <ProfileView user={auth.user} onLogout={() => void auth.logout()} loggingOut={auth.loading} />}
         {currentPath === "/gaps" && <KnowledgeGapsView memories={memories} />}
       </section>

@@ -15,12 +15,17 @@ import {
   getConversation,
   getConversationMessages,
   getCollections,
+  getDemoMemories,
+  getLegacySampleMemories,
   getMemories,
+  getMemoryAttachment,
   listConversations,
-  seedSampleDataOnce,
+  promoteLegacySample,
   updateMemory,
   type MemoryWithLinks,
 } from "./echo-db";
+import { validateImageDataUrl } from "./image-validation";
+import { normalizeContent, validateCitationMarkers } from "./recall-utils";
 
 const sourceType = z.enum(["note", "text", "url", "image", "screenshot"]);
 const tagsSchema = z.array(z.string().trim().min(1).max(40)).max(16).default([]);
@@ -37,7 +42,10 @@ const memoryShape = z.object({
   sourceType,
   category: z.string().trim().min(1).max(80).default("Unsorted"),
   tags: tagsSchema,
-  attachmentData: z.string().max(12_000_000).optional().nullable(),
+  attachmentData: z.string().max(12_000_000).optional().nullable().superRefine((value, context) => {
+    try { validateImageDataUrl(value); }
+    catch (error) { context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid image upload." }); }
+  }),
   attachmentName: z.string().max(240).optional().nullable(),
   createdAt: z.string().datetime().optional(),
   relatedIds: stringIds.default([]),
@@ -46,11 +54,6 @@ const memoryShape = z.object({
 const memoryCreate = memoryShape.refine((value) => value.content.trim().length > 0 || Boolean(value.attachmentData), {
   message: "Add some text or attach an image before saving.", path: ["content"],
 });
-
-function normalizeContent(text: string) {
-  return text.toLowerCase().replace(/https?:\/\/\S+/g, " ").replace(/[^\p{L}\p{N}\s-]/gu, " ").split(/\s+/).filter((word) => word.length > 2 && !STOP_WORDS.has(word));
-}
-const STOP_WORDS = new Set("the and for are was were with from this that into about your have has had not but all their then than them they what when where which while also can could should would will into out use using used its our you how why save saved idea ideas notes note memory memories from over under between because based after before onto than into does did".split(" "));
 
 function topConcepts(content: string, tags: string[], limit = 5) {
   const counts = new Map<string, number>();
@@ -112,8 +115,10 @@ function rankRelevant(question: string, all: MemoryWithLinks[]) {
   lastMonth.setMonth(lastMonth.getMonth() - 1);
   const asksLastMonth = /last month|previous month/.test(lower);
   return all.map((memory) => {
-    const title = memory.title.toLowerCase(); const content = `${memory.content} ${memory.summary ?? ""}`.toLowerCase();
-    const terms = [...tokens].reduce((score, token) => score + (title.includes(token) ? 4 : 0) + (content.includes(token) ? 1 : 0) + (memory.tags.some((tag) => tag.toLowerCase().includes(token)) ? 3 : 0), 0);
+    const titleTokens = new Set(normalizeContent(memory.title));
+    const contentTokens = new Set(normalizeContent(`${memory.content} ${memory.summary ?? ""}`));
+    const tagTokens = new Set(memory.tags.flatMap((tag) => normalizeContent(tag)));
+    const terms = [...tokens].reduce((score, token) => score + (titleTokens.has(token) ? 4 : 0) + (contentTokens.has(token) ? 1 : 0) + (tagTokens.has(token) ? 3 : 0), 0);
     const asksNamedMonth = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
       .some((month, index) => lower.includes(month) && memory.createdAt.getMonth() === index);
     const dateIntent = asksLastMonth
@@ -154,8 +159,19 @@ export const appRouter = router({
   }),
   memories: router({
     list: protectedProcedure.query(async ({ ctx }) => {
-      await seedSampleDataOnce(ctx.user.id);
       return getMemories(ctx.user.id);
+    }),
+    demo: protectedProcedure.query(() => getDemoMemories()),
+    legacySamples: protectedProcedure.query(({ ctx }) => getLegacySampleMemories(ctx.user.id)),
+    promoteLegacySample: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const promoted = await promoteLegacySample(ctx.user.id, input.id);
+      if (!promoted) throw new TRPCError({ code: "NOT_FOUND", message: "Legacy sample not found." });
+      return { success: true };
+    }),
+    attachment: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const attachment = await getMemoryAttachment(ctx.user.id, input.id);
+      if (!attachment) throw new TRPCError({ code: "NOT_FOUND", message: "Memory attachment not found." });
+      return attachment;
     }),
     create: protectedProcedure.input(memoryCreate).mutation(async ({ ctx, input }) => {
       if (!input.content.trim() && !input.attachmentData) throw new TRPCError({ code: "BAD_REQUEST", message: "Add text or an image before saving." });
@@ -173,7 +189,6 @@ export const appRouter = router({
       return { success: true };
     }),
     enrich: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
-      await seedSampleDataOnce(ctx.user.id);
       const all = await getMemories(ctx.user.id);
       const memory = all.find((item) => item.id === input.id);
       if (!memory) throw new TRPCError({ code: "NOT_FOUND", message: "Memory not found." });
@@ -205,27 +220,26 @@ export const appRouter = router({
       return { ...result, mode };
     }),
     recall: protectedProcedure.input(z.object({ question: z.string().trim().min(1).max(2000), conversationId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
-      await seedSampleDataOnce(ctx.user.id);
       const all = await getMemories(ctx.user.id);
       const ranked = rankRelevant(input.question, all);
       const selected = ranked.filter((item) => item.score > 0).slice(0, 6).map((item) => item.memory);
       if (!all.length) {
         const answer = "Your archive is empty, so I don't have saved memories to answer from yet. Capture a note or a link and ask me again.";
-        const conversationId = await appendConversationTurn(ctx.user.id, { conversationId: input.conversationId, question: input.question, answer, citedMemoryIds: [] });
+        const conversationId = await appendConversationTurn(ctx.user.id, { conversationId: input.conversationId, question: input.question, answer, citedMemoryIds: [], mode: "demo" });
         return { answer, mode: "demo" as const, sources: [], conversationId };
       }
       if (!selected.length) {
         const answer = "I couldn't find a saved memory relevant to that question. Try another topic, phrase, or source name.";
-        const conversationId = await appendConversationTurn(ctx.user.id, { conversationId: input.conversationId, question: input.question, answer, citedMemoryIds: [] });
+        const conversationId = await appendConversationTurn(ctx.user.id, { conversationId: input.conversationId, question: input.question, answer, citedMemoryIds: [], mode: "demo" });
         return { answer, mode: "demo" as const, sources: [], conversationId };
       }
-      const sources = selected;
+      const candidates = selected;
       let answer: string | null = null;
       let mode: "live" | "demo" = "demo";
       try {
         const completion = await callLiveAI([
-          { role: "system", content: "You are ECHO Recall. Answer the user's question using only the saved memory excerpts in the supplied context. If the context does not answer it, clearly say so. Never introduce outside facts or pretend to remember a source that is absent. Refer to sources by their exact [id] as needed; the app will show source cards." },
-          { role: "user", content: JSON.stringify({ question: input.question, savedMemories: sources.map(({ id, title, content, summary, category, tags, createdAt }) => ({ id, title, content: content.slice(0, 4000), summary, category, tags, createdAt: createdAt.toISOString() })) }) },
+          { role: "system", content: "You are ECHO Recall. Answer using only the supplied saved-memory excerpts. If they do not answer the question, say the archive has insufficient information. Never introduce outside facts. Add exact citation markers like [123] only for memories that directly support a claim. Do not cite every retrieved candidate." },
+          { role: "user", content: JSON.stringify({ question: input.question, savedMemories: candidates.map(({ id, title, content, summary, category, tags, createdAt }) => ({ id, title, content: content.slice(0, 2000), summary: summary?.slice(0, 500) ?? null, category, tags: tags.slice(0, 8), createdAt: createdAt.toISOString() })) }) },
         ]);
         if (completion) { answer = completion; mode = "live"; }
       } catch (error) {
@@ -233,22 +247,29 @@ export const appRouter = router({
       }
       if (!answer) {
         const questionTerms = normalizeContent(input.question);
-        const best = sources.filter((memory) => questionTerms.some((term) => `${memory.title} ${memory.content} ${memory.tags.join(" ")}`.toLowerCase().includes(term)));
+        const best = candidates.filter((memory) => questionTerms.some((term) => `${memory.title} ${memory.content} ${memory.tags.join(" ")}`.toLowerCase().includes(term)));
         answer = best.length
           ? `I found ${best.length} saved ${best.length === 1 ? "memory" : "memories"} that match your question. ${best.slice(0, 3).map((memory) => `“${memory.title}”${memory.summary ? ` — ${memory.summary}` : ` — ${memory.content.slice(0, 180)}${memory.content.length > 180 ? "…" : ""}`}`).join(" ")}`
           : "I couldn't find a clear answer in your saved notes. These are the closest recent memories in your archive; open a source or try a more specific topic.";
       }
+      const validated = validateCitationMarkers(answer, candidates.map((memory) => memory.id));
+      answer = validated.answer;
+      const citedIds = validated.citedIds;
+      if (mode === "demo") citedIds.push(...candidates.filter((memory) => normalizeContent(input.question).some((term) => `${memory.title} ${memory.content} ${memory.tags.join(" ")}`.toLowerCase().includes(term))).map((memory) => memory.id));
+      const uniqueCitedIds = [...new Set(citedIds)];
+      const sources = candidates.filter((memory) => uniqueCitedIds.includes(memory.id));
       const conversationId = await appendConversationTurn(ctx.user.id, {
         conversationId: input.conversationId,
         question: input.question,
         answer,
-        citedMemoryIds: sources.map((memory) => memory.id),
+        citedMemoryIds: uniqueCitedIds,
+        mode,
       });
       return { answer, mode, sources, conversationId };
     }),
   }),
   collections: router({
-    list: protectedProcedure.query(async ({ ctx }) => { await seedSampleDataOnce(ctx.user.id); return getCollections(ctx.user.id); }),
+    list: protectedProcedure.query(({ ctx }) => getCollections(ctx.user.id)),
     create: protectedProcedure.input(z.object({ name: z.string().trim().min(1).max(120), description: z.string().max(500).default(""), color: z.enum(["violet", "cyan", "blue", "rose", "amber"]).default("violet") })).mutation(async ({ ctx, input }) => ({ id: await createCollection(ctx.user.id, input) })),
     remove: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await deleteCollection(ctx.user.id, input.id); return { success: true }; }),
   }),
